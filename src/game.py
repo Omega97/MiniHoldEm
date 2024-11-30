@@ -123,8 +123,8 @@ class Game:
         self.current_player = self.utg_id
         self.print('\n>>> Blinds:')
         self.print(f'Button: Player {self.dealer_id} 🔘')
-        self.print(f'    SB: Player {self.small_blind_id} 🪙')
-        self.print(f'    BB: Player {self.big_blind_id} 🪙🪙')
+        self.print(f'    SB: Player {self.small_blind_id} 🟡')
+        self.print(f'    BB: Player {self.big_blind_id} 🟡🟡')
         self.print(f'   UTG: Player {self.utg_id} 🔫')
 
     def deal(self):
@@ -145,10 +145,11 @@ class Game:
 
     def fold(self, player):
         """Player folds."""
-        self.print(f'>>> Player {player} folds {Game.ACTION_EMOJIS[0]}')
         self.actions.append(0)
         self.actors.append(player)
         self.folded[player] = True
+        card = self.print_card(self.hands[player])
+        self.print(f'\n>>> Player {player} folds {Game.ACTION_EMOJIS[0]}  ({card})')
 
     def call(self, player):
         """Player calls the bet."""
@@ -157,7 +158,8 @@ class Game:
         self._bet(player, amount)
         self.actions.append(1)
         self.actors.append(player)
-        self.print(f'Player {player} calls {max_bet} {Game.ACTION_EMOJIS[1]}')
+        card = self.print_card(self.hands[player])
+        self.print(f'\n>>> Player {player} calls {max_bet} {Game.ACTION_EMOJIS[1]}  ({card})')
 
     def raise_(self, player):
         """Player raises the bet by double the current bet."""
@@ -166,7 +168,8 @@ class Game:
         self._bet(player, amount)
         self.actions.append(2)
         self.actors.append(player)
-        self.print(f'Player {player} raises to {new_max_bet} {Game.ACTION_EMOJIS[2]}')
+        card = self.print_card(self.hands[player])
+        self.print(f'\n>>> Player {player} raises to {new_max_bet} {Game.ACTION_EMOJIS[2]}  ({card})')
 
     def get_reward(self):
         if self.winner is None:
@@ -235,10 +238,10 @@ class Game:
         else:
             raise ValueError(f'Invalid action {action}')
 
+        self.print('')
         self.print(f'stacks = {self.stacks}')
-        self.print(f'bets = {self.bets}')
-        self.print(f'pot = {self.get_pot()}')
-        self.print(self.get_state())
+        self.print(f'  bets = {self.bets}')
+        self.print(f'   pot = {self.get_pot()} 🟡')
         self.ply += 1
 
     def _check__game_over(self):
@@ -257,12 +260,10 @@ class Game:
         return False
 
     def game_loop(self):
-
-        # self.print(f'\n>>> Game state 🎲')
-        # self.print('\n'.join([f"{k:>13}: {v}" for k, v in self.get_state().items()]))
-
+        """"""
         while True:
-            self.print(f'\n>>> Action on Player {self.current_player} 💥')
+            p = self.current_player
+            self.print(f'\n>>> Action on Player {p} 💥')
             action = self._get_player_action()
             self._execute_player_action(action)
             self._update_current_player()
@@ -284,13 +285,9 @@ class Game:
             for i in range(self.n_players):
                 if not self.folded[i]:
                     self.print(f' Player {i} shows {self.print_card(self.hands[i])}')
-        self.print(f'\n>>> Player {self.winner} wins the hand! 🏆')
-        self.print(f'>>> Player {self.winner} wins {chips} 🪙')
-
-        self.print(f'stacks = {self.stacks}')
-        self.print(f'bets = {self.bets}')
-        self.print(f'pot = {self.get_pot()}')
-        self.print(self.get_state())
+        card = self.print_card(self.hands[self.winner])
+        self.print(f'\n>>> Player {self.winner} wins the hand! 🏆 ({card})')
+        self.print(f'>>> Player {self.winner} wins {chips} 🟡')
 
     def get_game_record(self):
         """Game record"""
@@ -358,7 +355,7 @@ class Game:
         for i in range(len(self.players)):
             self.print(f' Player{i:2}) {reward[i]:+5.0f}')
         self.print(f'\n>>> Hand ends 🎊')
-        self.print('\n')
+        self.print('*' * 40 + '\n')
 
         # pass rewards to agents
         for i, agent in enumerate(self.players):
@@ -372,7 +369,8 @@ class Game:
         self.verbose = verbose
 
         for _ in range(n_games * self.n_players):
-            self.print('\n\n>>> New hand starts 🎉')
+            self.print('\n\n' + '*' * 40)
+            self.print('>>> New hand starts 🎉')
             self.print(f'({self.n_players} players, {self.n_cards} cards, {self.n_chips} chips)')
             self.hands_count += 1
             self.reset_game()
