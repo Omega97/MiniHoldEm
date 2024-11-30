@@ -1,20 +1,20 @@
-"""
-todo cumulative average rewards
-"""
 import numpy as np
 from src.game import Game
 from copy import deepcopy
 import pickle
 
+GAME_TREE_DIR = '../data/trees/'
+AGENTS_DIR = '../data/agents/'
+
 
 def save_game_tree(tree, n_players, power):
-    file_name = fr'../data/trees/game_tree_{n_players}_{power}.pkl'
+    file_name = GAME_TREE_DIR + fr'game_tree_{n_players}_{power}.pkl'
     with open(file_name, 'wb') as f:
         pickle.dump(tree, f)
 
 
 def load_game_tree(n_players, power):
-    file_name = fr'../data/trees/game_tree_{n_players}_{power}.pkl'
+    file_name = GAME_TREE_DIR + fr'game_tree_{n_players}_{power}.pkl'
     with open(file_name, 'rb') as f:
         return pickle.load(f)
 
@@ -77,14 +77,14 @@ class HumanAgent(Agent):
         for i in range(self.n_players):
             gain = state['stacks'][i] - self.game.n_chips
             if gain != 0:
-                print(f'Player {i+1})  {gain:+6.0f}🪙')
+                print(f'Player {i+1})  {gain:+6.0f}🟡')
             else:
                 print(f'Player {i+1}) ')
 
     def _print_actions(self, state):
 
         if 'to_call' in state:
-            print(f'\n  Pot: {state["pot"]}🪙   ({state["to_call"]}🪙 to call)')
+            print(f'\n  Pot: {state["pot"]} 🟡   ({state["to_call"]}🪙 to call)')
 
         # hole
         if 'hole' in state:
@@ -194,7 +194,7 @@ class DummyAgent(Agent):
                     self.strategy[key] = self.logits[i]
                     i += 1
 
-    def get_proba(self, player: int, card:int, actions):
+    def get_proba(self, player: int, card: int, actions):
         """player, card, actions"""
         key = (int(player), int(card), tuple(actions))
         return softmax(self.strategy[key])
@@ -239,7 +239,8 @@ class TrainingAgent(Agent):
         self._actions = None
         self._node_hash = None
 
-        self._load_game_tree()
+        if TrainingAgent.GAME_TREE is None:
+            self._load_game_tree()
         self._init_logits(sigma)
 
     def _load_game_tree(self):
@@ -296,6 +297,7 @@ class TrainingAgent(Agent):
         return np.random.choice(len(p), p=p)
 
     def save(self, file_name):
+        print(f'Saving agent {file_name}')
         with open(file_name, 'wb') as f:
             pickle.dump(self.logits, f)
 

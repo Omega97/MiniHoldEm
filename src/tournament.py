@@ -1,9 +1,10 @@
+import os.path
 import numpy as np
 import matplotlib.pyplot as plt
 from copy import deepcopy
 from fitness import Fitness
 from src.game import Game
-from src.agents import TrainingAgent, load_game_tree
+from src.agents import TrainingAgent, load_game_tree, AGENTS_DIR
 
 
 def softmax(logits):
@@ -13,23 +14,30 @@ def softmax(logits):
     return mat / v
 
 
-def entropy(logits):
-    mat = np.exp(logits)
-    return -np.sum(logits * mat, axis=1)
+def compute_entropy(logits):
+    """ Computes the entropy of a given matrix of logits."""
+    probabilities = np.exp(logits) / np.sum(np.exp(logits), axis=-1, keepdims=True)
+    probabilities = np.clip(probabilities, 1e-15, 1 - 1e-15)
+    entropy = -np.sum(probabilities * np.log(probabilities), axis=-1)
+    return np.average(entropy)
 
 
 class Tournament:
     RECORD = []
+    ENTROPY = []
     AGENT_COUNT = 0
     EPOCHS = 0
     FITNESS_DATABASE = dict()
 
-    def __init__(self, game: Game, agents: list, fitness):
+    def __init__(self, game: Game, agents: list, fitness, p_mutation=0.1):
 
         # environment
         self.game = game
-        self.game_tree = load_game_tree(game.n_players, game.power)
+        self.n_players = game.n_players
         self.n_cards = game.n_cards
+        self.power = game.power
+        self.p_mutation = p_mutation
+        self.game_tree = load_game_tree(self.n_players, self.power)
 
         # initialization
         self.agents = agents
@@ -65,68 +73,66 @@ class Tournament:
         if key in Tournament.FITNESS_DATABASE:
             return Tournament.FITNESS_DATABASE[key]
 
+    def get_best_agent(self) -> TrainingAgent:
+        return self.agents[-1]
+
     def _compute_fitness(self):
-        """Compute fitness by making pairwise matches"""
+        """Compute fitness
+        Use the best agent to evaluate all the other agents
+        """
         self.scores = np.zeros(self.n_agents)
         self.counts = np.zeros(self.n_agents, dtype=int)
-        for i in range(self.n_agents):
-            for j in range(i):
-                agents = (self.agents[i], self.agents[j])
-                f_ = self._get_fitness_from_db(self.agent_ids[i], self.agent_ids[j])
-                if f_ is None:
-                    f_ = self.fitness(agents)
-                    self._save_fitness_to_db(self.agent_ids[i], self.agent_ids[j], f_)
-                self.add_score(i, f_[0])
-                self.add_score(j, f_[1])
+
+        best_agent = self.get_best_agent()
+        for i in range(self.n_agents-1):
+            agents = tuple([self.agents[i]] + [best_agent] * (self.n_players-1))
+            f_ = self.fitness(agents)
+            self.add_score(i, f_[0])
+        self.add_score(self.n_agents-1, 0.)
 
     def _sort_agents(self):
-        # sort players by score
+        """Sort players by score"""
         order = np.argsort(self.get_fitness())
         self.agents = [self.agents[i] for i in order]
         self.scores = self.scores[order]
         self.counts = self.counts[order]
         self.agent_ids = self.agent_ids[order]
 
-    def _replacement(self, n_replace, sigma):
+    def mutation(self, i_mutate, sigma):
+        shape = self.agents[i_mutate].logits.shape
+        dx = np.random.normal(0, sigma, shape)
+        while True:
+            mask = np.random.random(dx.shape) < self.p_mutation
+            if np.sum(mask):
+                break
+        self.agents[i_mutate].logits += dx * mask
 
-        indices = np.arange(self.n_agents)
-        indices_replace = indices[:n_replace]
-        indices_keep = indices[n_replace:]
-        p = indices_keep / indices_keep.sum()
-        indices_keep = np.random.choice(indices_keep, n_replace, replace=False, p=p)
-
-        for i, j in zip(indices_keep, indices_replace):
-            print(f'({i} -> {j})  {self.agent_ids[i]:3} -> {self.agent_ids[j]:3}')
+    def _replacement(self, i_keep: list, i_replace: list, sigma=1.):
+        assert len(i_keep) == len(i_replace)
+        for i, j in zip(i_keep, i_replace):
+            print(f'{i} > {j}   {self.agent_ids[i]:3} -> {self.agent_ids[j]:3}')
             # replacement
             self.reset_agent(j, deepcopy(self.agents[i]))
             # mutation
-            shape = self.agents[j].logits.shape
-            dx = np.random.normal(0, sigma, shape)
-            self.agents[j].logits += dx
+            self.mutation(j, sigma)
 
-    def _crossover(self, top_n=5):
-        top_indices = np.arange(self.n_agents - top_n, self.n_agents)
-        i_better, i_worst = np.random.choice(top_indices, 2, replace=False)
+    def _crossover(self, i_keep: list, i_replace: list, w=.5):
+        assert len(i_keep) == len(i_replace)
+        for i, j in zip(i_keep, i_replace):
+            print(f'{i} > {j}   {self.agent_ids[i]:3} + {self.agent_ids[j]:3} -> {self.agent_ids[j]:3}')
+            self.reset_agent(j, deepcopy(self.agents[i]))
+            new_logits = w * self.agents[i].logits + (1-w) * self.agents[j].logits
+            self.agents[j].logits = new_logits
 
-        i_replace = 0
-        print(f'({i_better} + {i_worst} -> {i_replace})  '
-              f'{self.agent_ids[i_better]:3} + {self.agent_ids[i_worst]:3} -> {self.agent_ids[i_replace]:3}')
-        self.reset_agent(i_replace, deepcopy(self.agents[i_better]))
-        self.agents[i_replace].logits = (self.agents[i_better].logits + self.agents[i_worst].logits)/2
-
-    def get_best_agent(self) -> TrainingAgent:
-        return self.agents[-1]
-
-    def evaluate(self, top_n=5):
-
-        # evaluation
+    def evaluate(self, benchmark_agent, top_n=5):
+        """evaluation"""
         print()
-        random_agent = TrainingAgent(self.game, sigma=0.)
         w = np.exp(np.arange(top_n) / (top_n-1) * 4)
         w /= np.sum(w)
+
         v = []
         for i in reversed(range(self.n_agents - top_n, self.n_agents)):
-            agents = [self.agents[i], random_agent]
+            agents = [self.agents[i]] + [benchmark_agent] * (self.n_players-1)
             f_ = self.fitness(agents)
             v.append(f_[0])
             print(f'{self.agent_ids[i]:4}) {f_[0]:8.3f}')
@@ -134,36 +140,95 @@ class Tournament:
         score = v.dot(w)
         Tournament.RECORD.append(score)
 
-    def run(self, n_epochs, n_replace, sigma=0.1, top_n=5):
+        v = []
+        for i in reversed(range(self.n_agents - top_n, self.n_agents)):
+            logits = self.agents[i].logits
+            s = compute_entropy(logits) / np.log(3)
+            v.append(s)
+        v = np.array(v)
+        s = v.dot(w)
+        Tournament.ENTROPY.append(s)
+
+    def run(self, n_epochs, n_replace, n_crossover,
+            benchmark_agent, sigma=0.1, top_n=5, agent_path=None):
         for epoch in range(n_epochs):
             Tournament.EPOCHS += 1
             print(f'\nEpoch {Tournament.EPOCHS}   ({self.n_agents}/{self.AGENT_COUNT} angents)')
             if Tournament.EPOCHS > 1:
-                self._replacement(n_replace, sigma)
-                self._crossover()
+
+                self._crossover(i_keep=list(range(self.n_agents-n_crossover, self.n_agents)),
+                                i_replace=list(range(n_crossover)),
+                                w=0.5 + np.random.random() ** 2 * 0.8)
+                self._replacement(i_keep=list(range(self.n_agents-n_replace, self.n_agents)),
+                                  i_replace=list(range(1, 1+n_replace)),
+                                  sigma=sigma)
+
             self._compute_fitness()
             self._sort_agents()
-            self.evaluate(top_n)
+            self.evaluate(benchmark_agent, top_n)
+
+            print()
+            logits = self.get_best_agent().logits
+            norm = np.mean(logits**2)**0.5
+            print(f'   norm = {norm:.3f}')
+            s = compute_entropy(logits) / np.log(3)
+            print(f'entropy = {s:.3f}')
+
+            if agent_path:
+                self.get_best_agent().save(agent_path)
 
 
-def main(n_agents=20, n_epochs=500, n_replace=2, init_scale=.5,
-         sigma=.5, seed=0, random_state=0, top_n=10,
-         n_players=2, n_cards=6, power=2):
+def main(n_players=3, n_cards=6, power=4,
+         n_agents=10, n_epochs=30, n_replace=3, n_crossover=1,
+         init_scale=.1, sigma=.3, top_n=3,
+         reg=1e-3, p_mutation=0.1,
+         seed=None, random_state=None,
+         ):
 
     np.random.seed(seed)
+    path = AGENTS_DIR + f'best_agent_{n_players}_{n_cards}_{power}.pkl'
     game = Game(n_players=n_players, n_cards=n_cards, power=power, random_state=random_state)
-    agents = [TrainingAgent(game, sigma=init_scale) for _ in range(n_agents)]
-    fitness = Fitness(n_players, n_cards, TrainingAgent.GAME_TREE)
-    tournament = Tournament(game, agents, fitness)
-    tournament.run(n_epochs=n_epochs, n_replace=n_replace, sigma=sigma, top_n=top_n)
 
-    # save parameters
-    tournament.get_best_agent().save(f'best_agent_{n_players}_{n_cards}_{power}.pkl')
+    # create agents
+    if os.path.exists(path):
+        # load pre-trained agents
+        agents = [TrainingAgent(game).load(path)
+                  for _ in range(n_agents)]
+    else:
+        agents = [TrainingAgent(game) for _ in range(n_agents)]
 
+    # fitness
+    fitness = Fitness(n_players, n_cards, TrainingAgent.GAME_TREE, reg=reg)
+
+    # tournament
+    tournament = Tournament(game, agents, fitness, p_mutation=p_mutation)
+    for i in range(n_agents):
+        tournament.mutation(i, init_scale)
+
+    # benchmark agent
+    try:
+        benchmark_agent = TrainingAgent(game).load(path)
+    except FileNotFoundError:
+        benchmark_agent = TrainingAgent(game, sigma=0.)
+
+    tournament.run(n_epochs=n_epochs, n_replace=n_replace, n_crossover=n_crossover,
+                   benchmark_agent=benchmark_agent, sigma=sigma, top_n=top_n,
+                   agent_path=path)
+
+    fig, ax = plt.subplots(ncols=2)
+
+    plt.sca(ax[0])
     plt.plot(tournament.RECORD)
-    plt.title('Mini Hold\'em EA')
+    plt.title(f'Mini Hold\'em ({n_players} players, {n_cards} cards, {2**power} chips)')
     plt.xlabel('epoch')
     plt.ylabel('fitness')
+
+    plt.sca(ax[1])
+    plt.plot(tournament.ENTROPY, c='green')
+    plt.title('Entropy')
+    plt.xlabel('epoch')
+    plt.ylabel('entropy')
+
     plt.show()
 
 
