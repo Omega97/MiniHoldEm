@@ -1,6 +1,7 @@
-from src.agents import TrainingAgent
 import numpy as np
 from itertools import permutations
+import torch
+from src.agents import TrainingAgent
 
 
 def inverse_permutation_numpy(perm):
@@ -11,17 +12,24 @@ def inverse_permutation_numpy(perm):
 
 
 class Fitness:
-    def __init__(self, n_players: int, n_cards: int, game_tree: dict):
+    def __init__(self, n_players: int, n_cards: int, game_tree: dict, reg=1e-3):
+        assert game_tree is not None
+
         self.n_players = n_players
         self.game_tree = game_tree
         self.n_cards = n_cards
-
+        self.reg = reg
         self.agents = None
-        self.orders = [np.roll(np.arange(self.n_players), i) for i in range(n_players)]
-        self.inv_orders = [inverse_permutation_numpy(v) for v in self.orders]
-        self.n_orders = len(self.orders)
-        self.hands = tuple(permutations(range(self.n_cards), self.n_players))
-        self.n_hands = len(self.hands)
+
+        self.orders = None
+        self.inv_orders = None
+        self.n_orders = None
+        self._compute_orders()
+
+        self.hands = None
+        self.n_hands = None
+        self._compute_hands()
+
         self.leaf_hashes = None
         self.n_leaf_hashes = None
         self._compute_leaf_hashes()
@@ -31,10 +39,20 @@ class Fitness:
         self.rewards = None
         self._compute_rewards()
 
+    def _compute_orders(self):
+        self.orders = [np.roll(np.arange(self.n_players), i) for i in range(self.n_players)]
+        self.inv_orders = [inverse_permutation_numpy(v) for v in self.orders]
+        self.n_orders = len(self.orders)
+
+    def _compute_hands(self):
+        self.hands = permutations(range(self.n_cards), self.n_players)
+        self.hands = tuple([np.array(h) for h in self.hands])
+        self.n_hands = len(self.hands)
+
     def get_order(self, i: int) -> np.array:
         return self.orders[i]
 
-    def get_ordered(self, i: int) -> np.array:
+    def get_inv_order(self, i: int) -> np.array:
         return self.inv_orders[i]
 
     def _compute_leaf_hashes(self):
@@ -57,7 +75,7 @@ class Fitness:
         reward = -np.array(leaf['bets'])
         reward[winner] += leaf['pot']
 
-        order = self.get_order(i_order)
+        order = self.get_inv_order(i_order)
         reward = reward[order]
         return reward
 
@@ -71,7 +89,7 @@ class Fitness:
         of those that didn't fold has the strongest hand.
         """
         self.rewards = np.ones(self.shape)
-        for i_order in range(len((self.orders))):
+        for i_order in range(len(self.orders)):
             for i_hand, holes in enumerate(self.hands):
                 for i_leaf, leaf_hash in enumerate(self.leaf_hashes):
                     reward = self._get_reward(leaf_hash, i_order, holes)
@@ -127,6 +145,10 @@ class Fitness:
                     p = self._get_proba(i_order, holes, parents, positions, actions)
                     self.proba[i_order, i_hand, i_l, :] *= p
 
+    def _compute_reg(self, i):
+        norm = np.mean(self.agents[i].logits**2)**0.5
+        return norm * self.reg
+
     def compute(self, agents):
         """
         The fitness is the expected value of each agent's reward,
@@ -141,21 +163,56 @@ class Fitness:
 
         fitness = np.sum(self.proba * self.rewards, axis=(0, 1, 2,))
         fitness /= self.n_hands * self.n_players
+
+        # regularization
+        for i in range(len(self.agents)):
+            fitness[i] -= self._compute_reg(i)
+
         return fitness
 
     def __call__(self, agents):
         return self.compute(agents)
 
-    def gradient(self):
-        """Compute the gradient of the fitness
-        relative to the parameters of all the agents.
-
-        F = sum(i_leaf, p_i_leaf * s_i_leaf)
-        L = sum(i_leaf, log(p_i_leaf) * s_i_leaf)
-          = sum(i_leaf, sum(i_node, log(p_(i_leaf, i_node))) * s_i_leaf)
-          = sum((i_leaf, i_node), lp_(i_leaf, i_node) * s_i_leaf)
-
-        dL/dlp_(j,k) = sum((i_leaf, i_node), 1(i_leaf=j, i_node=k) * s_i_leaf)
-
+    def gradient(self, agents):
         """
-        ...
+        gradient of the fitness wrt the logits of the first agent
+        grad F = p * v - p * p.dot(v)
+        """
+        logits = agents[0].logits
+        print(logits.shape)
+
+
+class TorchFitness(Fitness):
+    def compute_torch(self, agents):
+        # Convert agents' logits to PyTorch tensors
+
+        logits = torch.tensor([agent.logits for agent in agents],
+                              dtype=torch.float32, requires_grad=True)
+
+        # ... (rest of the computation, using PyTorch operations)
+        proba = ...
+        rewards = ...
+        fitness = torch.sum(proba * rewards, dim=(0, 1, 2)) / (self.n_hands * self.n_players)
+
+        # Regularization term
+        for i in range(len(agents)):
+            fitness -= self._compute_reg_torch(logits[i])
+
+        return fitness
+
+    def _compute_reg_torch(self, logits):
+        norm = torch.mean(logits ** 2) ** 0.5
+        return norm * self.reg
+
+    def gradient(self, agents):
+        """
+        grad F = p * v - p * p.dot(v)
+        """
+        fitness = self(agents)
+        fitness.backward()
+
+        gradients = []
+        for agent in agents:
+            gradients.append(agent.logits.grad.clone().detach().numpy())
+
+        return gradients
