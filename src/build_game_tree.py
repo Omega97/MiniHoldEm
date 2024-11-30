@@ -1,6 +1,6 @@
 import numpy as np
 from src.game import Game
-from src.agents import ConstantAgent, save_game_tree
+from src.agents import ConstantAgent, save_game_tree, load_game_tree
 
 
 class GameTree(Game):
@@ -11,6 +11,12 @@ class GameTree(Game):
         super().__init__(n_players, n_cards, power,
                          do_move_dealer=do_move_dealer, random_state=random_state)
         self.parent_hash = None
+
+    def load_game_tree(self):
+        try:
+            GameTree.TREE = load_game_tree(self.n_players, self.power)
+        except FileNotFoundError:
+            print(f'No game tree found')
 
     def add_node(self, state, parent_hash=None):
         """Add node to game tree"""
@@ -65,28 +71,35 @@ class GameTree(Game):
         parent['legal_actions'].add(action)
 
 
-def test(n_players=5, power=2, n_games=2,  #523
-         do_move_dealer=False, random_state=1):
-    game = GameTree(n_players=n_players, n_cards=n_players+1, power=power,
-                    do_move_dealer=do_move_dealer, random_state=random_state)
-
-    print(game.TREE)
-
-    p = np.array([1., 2., 3.])
-    agents = [ConstantAgent(game, p=p) for _ in range(n_players)]
-    game.play(agents, n_games=n_games)
-
+def print_game_tree(tree: dict):
     print()
-    for k, v in game.TREE.items():
+    for k, v in tree.items():
         depth = v["depth"]
         c = " *"[int('children' not in v)]
         print(f'{k} {c}{"  " * depth}{v}')
 
-    print(f'\n{len(game.TREE)} nodes')
 
-    save_game_tree(game.TREE, n_players, power)
+def test(n_players=4, power=4, n_games=300):
+    game = GameTree(n_players=n_players, n_cards=n_players+1, power=power,
+                    do_move_dealer=False, random_state=None)
 
-    print(f'\n>>> Saved game tree')
+    game.load_game_tree()
+
+    p = np.array([1., 2., 4.])
+    agents = [ConstantAgent(game, p=p) for _ in range(n_players)]
+
+    while True:
+        # play games
+        game.play(agents, n_games=n_games)
+
+        # show results
+        # print_game_tree(game.TREE)
+        print(f'{len(game.TREE)} nodes')
+
+        # save game tree
+        save_game_tree(game.TREE, n_players, power)
+
+    # print(f'\n>>> Saved game tree')
 
 
 if __name__ == '__main__':
